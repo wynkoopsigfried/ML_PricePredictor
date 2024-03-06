@@ -1,0 +1,82 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+import matplotlib.pyplot as plt
+
+# Load data, create 50 day SMA, drop NaN values from dataframe
+data = yf.download(tickers='BTC-USD', period='96mo', interval='1d')
+data['SMA_40'] = data['Close'].rolling(window=40).mean()
+data = data.dropna()
+pd.set_option('display.max_columns', None)
+
+# Preprocess data: Gather closing price, volume, and 50 day SMA & scale down the data
+data = data[['Close', 'Volume', 'SMA_40']]
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+
+# Split data into train and test sets
+train_data = scaled_data[:int(0.8*len(scaled_data))]
+test_data = scaled_data[int(0.8*len(scaled_data)):]
+
+# Create sequences and labels for training
+def create_sequences(data, sequence_length):
+    X, y = [], []
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:i+sequence_length])
+        y.append(data[i+sequence_length])
+    return np.array(X), np.array(y)
+
+sequence_length = 50
+X_train, y_train = create_sequences(train_data, sequence_length)
+X_test, y_test = create_sequences(test_data, sequence_length)
+
+# Define and train the LSTM model
+model = Sequential([
+    LSTM(units=50, return_sequences=True, input_shape=(sequence_length, 1)),
+    LSTM(units=30),
+    Dense(units=1)
+])
+model.compile(optimizer='adam', loss='mean_squared_error')
+model.fit(X_train, y_train, epochs=10, batch_size=32)
+
+# Evaluate the model
+loss = model.evaluate(X_test, y_test)
+print(f'Test Loss: {loss}')
+
+# Make predictions
+predictions = model.predict(X_test)
+
+# Inverse transform the predictions and actual values
+predictions = scaler.inverse_transform(predictions)
+actual_values = scaler.inverse_transform(y_test)
+
+# Calculate evaluation metrics
+mse = np.mean((predictions - actual_values)**2)
+mae = np.mean(np.abs(predictions - actual_values))
+print(f'Mean Squared Error: {mse}')
+print(f'Mean Absolute Error: {mae}')
+
+# Match predictions to scale properly with the model
+prediction_data = scaled_data[-sequence_length:]  # Get the last sequence_length data points
+current_batch = prediction_data.reshape((1, sequence_length, 1))  # Reshape it to match the network's input shape
+
+forecast = []  # Initialize the list for predictions
+
+# Start forecasting
+for i in range(30):  # Forecasting 30 days into the future
+    current_pred = model.predict(current_batch)[0]
+    forecast.append(current_pred)
+    current_batch = np.append(current_batch[:,1:,:], [[current_pred]], axis=1)
+
+# Inverse-transform to get the real prices
+forecast = scaler.inverse_transform(forecast) 
+
+# Plot the predictions
+plt.figure(figsize=(10,6))
+plt.plot(range(len(data)), data['Close'], color='blue')
+plt.plot(range(len(data), len(data) + 30), forecast, color='red')
+plt.legend(["Past", "Future"])
+plt.show()
